@@ -104,13 +104,21 @@ function build() {
     blocks.push({ title: "Warm-down", min: close, cat: byId("warmdown"), tip: "Volume piano, pedali, niente ambizione." });
   }
   const session = {
+    id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()),
     title: `Sessione ${minutes}' · ${chosen.map((c) => c.label).join(" · ")}`,
     summary: `Percorso da ${minutes} minuti per un allievo ${state.level}. Riscaldamento 20%, fondamentali, poi musica.`,
     createdAt: new Date().toISOString(),
+    savedAt: new Date().toISOString(),
+    note: "",
+    level: state.level,
+    minutes,
     blocks: blocks.map((b) => ({ ...b, video: pick(b.cat, state.level, preferShort) })),
   };
   state.session = session;
   state.idx = 0;
+  const diary = loadDiary().filter((s) => s.id !== session.id);
+  diary.unshift(session);
+  localStorage.setItem("st:diary", JSON.stringify(diary));
   localStorage.setItem("st:last", JSON.stringify(session));
   showSession();
 }
@@ -222,27 +230,46 @@ function fmtDate(iso) {
 }
 
 function loadDiary() {
+  let diary = [];
   try {
-    const raw = JSON.parse(localStorage.getItem("st:diary") || "null");
-    if (Array.isArray(raw)) return raw;
+    const raw = JSON.parse(localStorage.getItem("st:diary") || "[]");
+    if (Array.isArray(raw)) diary = raw;
   } catch (_) {}
+  const seen = new Set(diary.map((s) => s.id || `${s.createdAt}|${s.title}`));
+  const has = (s) => {
+    const id = s.id || `${s.createdAt}|${s.title}`;
+    if (seen.has(id)) return true;
+    return diary.some((d) => d.createdAt && d.createdAt === s.createdAt && d.title === s.title);
+  };
+  const adopt = (s, fallbackId) => {
+    if (!s || !s.title || has(s)) return;
+    const id = s.id || fallbackId;
+    const entry = {
+      id,
+      title: s.title,
+      summary: s.summary || "",
+      createdAt: s.createdAt,
+      savedAt: s.savedAt || s.createdAt,
+      note: s.note || "",
+      blocks: s.blocks || [],
+      level: s.level,
+      minutes: s.minutes,
+    };
+    diary.push(entry);
+    seen.add(id);
+  };
   try {
     const hist = JSON.parse(localStorage.getItem("st:hist") || "[]");
-    if (!Array.isArray(hist) || !hist.length) return [];
-    const migrated = hist.map((s, i) => ({
-      id: `legacy-${s.createdAt || i}`,
-      title: s.title,
-      summary: s.summary,
-      createdAt: s.createdAt,
-      savedAt: s.createdAt,
-      note: "",
-      blocks: s.blocks || [],
-    }));
-    localStorage.setItem("st:diary", JSON.stringify(migrated));
-    return migrated;
-  } catch (_) {
-    return [];
-  }
+    if (Array.isArray(hist)) hist.forEach((s, i) => adopt(s, `legacy-${s.createdAt || i}`));
+  } catch (_) {}
+  try {
+    adopt(JSON.parse(localStorage.getItem("st:last") || "null"), `last-${Date.now()}`);
+  } catch (_) {}
+  diary.sort((a, b) => String(b.savedAt || b.createdAt).localeCompare(String(a.savedAt || a.createdAt)));
+  try {
+    localStorage.setItem("st:diary", JSON.stringify(diary));
+  } catch (_) {}
+  return diary;
 }
 
 function showClose() {
@@ -256,7 +283,7 @@ function showClose() {
     <div class="card">
       <ul class="blocks">${list}</ul>
       <label class="field" for="practice-note">Nota di pratica</label>
-      <textarea id="practice-note" class="note-input" placeholder="Come è andata, cosa tenere, cosa cambiare la prossima volta."></textarea>
+      <textarea id="practice-note" class="note-input" placeholder="Come è andata, cosa tenere, cosa cambiare la prossima volta.">${esc(s.note || "")}</textarea>
       <div class="row">
         <button class="btn" id="back-blocks">Torna ai blocchi</button>
         <button class="btn primary" id="save-diary">Salva nel diario</button>
@@ -270,18 +297,22 @@ function saveDiary() {
   if (!field || !state.session) return;
   const s = state.session;
   const entry = {
-    id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()),
+    id: s.id || (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()),
     title: s.title,
     summary: s.summary,
     createdAt: s.createdAt,
     savedAt: new Date().toISOString(),
     note: field.value.trim(),
     blocks: s.blocks,
-    level: state.level,
-    minutes: state.minutes,
+    level: s.level || state.level,
+    minutes: s.minutes || state.minutes,
   };
+  state.session = entry;
   const diary = loadDiary();
-  diary.unshift(entry);
+  const idx = diary.findIndex((x) => x.id === s.id);
+  if (idx >= 0) diary[idx] = entry;
+  else diary.unshift(entry);
+  diary.sort((a, b) => String(b.savedAt || b.createdAt).localeCompare(String(a.savedAt || a.createdAt)));
   try {
     localStorage.setItem("st:diary", JSON.stringify(diary));
   } catch (_) {
@@ -307,7 +338,7 @@ function renderDiario() {
           return `<div class="card entry"><strong>${esc(s.title)}</strong><p class="meta">${esc(when)}</p><p class="muted">${esc(s.summary || "")}</p>${note}<p class="muted">${blocks}</p><button class="btn primary" data-open="${esc(s.id)}">Riapri</button></div>`;
         })
         .join("")}`
-    : `<h1>Diario vuoto</h1><p class="muted">Alla fine di una sessione scrivi una nota e salvala. Resta qui, su questo browser.</p>`;
+    : `<h1>Diario vuoto</h1><p class="muted">Genera una sessione: entra qui da sola. Alla fine puoi aggiungere una nota.</p>`;
 }
 
 function goto(id) {
